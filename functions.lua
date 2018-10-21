@@ -15,6 +15,90 @@ function string.basename(str)
     end
 end
 
+function string.split(str, idx)
+  local result = {}
+  for m in (str..idx):gmatch("(.-)"..idx) do
+    if not (m == str) then
+      table.insert(result, m)
+    end
+  end
+  -- return self if no need to split
+  if #result < 1 then table.insert(result, str) end
+  return result
+end
+
+function string.strip(str)
+  return (str:gsub("^%s*(.-)%s*$", "%1"))
+end
+
+function calculate_unary_conditional(param)
+  local a = param:strip():split(" ")
+  local v1 = tonumber(rpm.expand("%" .. a[1]:gsub("0%%%{%?(.-)%}", "%1")))
+
+  -- on current TW there's no definition for sle_version but sles_version
+  if v1 == nil then
+    if a[1] == "0%{?sle_version}" then
+      v1 = tonumber(rpm.expand("%sles_version"))
+    else
+      v1 = 0
+    end
+  end
+
+  local op = ">"
+  local v2 = 0
+  if #a > 1 then
+    op = a[2]
+    v2 = tonumber(a[3])
+  end
+
+  local function gtr(v1,v2) return v1 > v2 end
+  local function ltr(v1, v2) return v1 < v2 end
+  local function eq(v1, v2) return v1 == v2 end
+  local function neq(v1, v2) return v1 ~= v2 end
+  local function gte(v1, v2) return v1 >= v2 end
+  local function lte(v1, v2) return v1 <= v2 end
+
+  local op_tbl = {}
+  op_tbl[">"] = gtr
+  op_tbl[">="] = gte
+  op_tbl["<"] = ltr
+  op_tbl["<="] = lte
+  op_tbl["=="] = eq
+  op_tbl["!="] = neq
+
+  return op_tbl[op](v1,v2)
+end
+
+-- the embeded lua in rpm can't use pairs but ipairs,
+-- and ipairs can't be used in local functions.
+function calculate_and_conditional(param)
+  local a = param:strip():split("&&")
+  local tbl = {}
+  for _, v in ipairs(a) do
+    table.insert(tbl, calculate_unary_conditional(v))
+  end
+  for _, v in ipairs(tbl) do
+    if not v then return false end
+  end
+  return true
+end
+
+function calculate_or_conditional(param)
+  local a = param:strip():split("||")
+  local tbl = {}
+  for _, v in ipairs(a) do
+    if v:match("&&") then
+      table.insert(tbl, calculate_and_conditional(v))
+    else
+      table.insert(tbl, calculate_unary_conditional(v))
+    end
+  end
+  for _, v in ipairs(tbl) do
+    if v then return true end
+  end
+  return false
+end
+
 function lookup_table(tbl)
     local result = {}
     for _,v in ipairs(tbl) do result[v] = true end

@@ -273,6 +273,72 @@ function python_subpackages()
         return count == 0
     end
 
+    local function calculate_conditional_line(param)
+      local line = param:gsub("^%%if%s*(.*)$", "%1")
+      local rslt = true
+      if line:match("||") then
+        rslt = calculate_or_conditional(line)
+      elseif line:match("&&") then
+        rslt = calculate_and_conditional(line)
+      else
+        rslt = calculate_unary_conditional(line)
+      end
+
+      return rslt
+    end
+
+    local function rescan_spec(specpath)
+      local f, err = io.open(specpath, 'r')
+      if err then print ("could not find spec file at path: " .. specpath) return end
+
+      -- specfile container
+      local spec = ''
+      -- container for evaluated conditions
+      local condtbl = {}
+      -- indicator for else condition
+      local idx = false
+      -- status for the current condition
+      local status = true
+
+      while true do
+        local line = f:read()
+        if line == nil then break end
+        if line:startswith("%if") then
+          status = calculate_conditional_line(line)
+          table.insert(condtbl, line)
+        elseif line:startswith("%else") then
+          status = (not status)
+          idx = true
+          table.insert(condtbl, line)
+        elseif line:startswith("%endif") then
+          -- drop the last item from container, can be '%if' or '%else'
+          table.remove(condtbl, #condtbl)
+          if idx then
+            -- drop the last item again, it must be '%if'
+            table.remove(condtbl, #condtbl)
+            idx = false
+          end
+          -- restore the status to the previous if
+          if #condtbl > 0 then
+            if condtbl[#condtbl]:startswith("%else") then
+              status = (not calculate_conditional_line(condtbl[#condtbl - 1]))
+            else
+              status = calculate_conditional_line(condtbl[#condtbl])
+            end
+          else
+            -- print everything again
+            status = true
+          end
+        else
+          if status then
+            spec = spec .. line .. "\n"
+          end
+        end
+      end
+      io.close(f)
+      return spec:split("\n")
+    end
+
     local KNOWN_SECTIONS = lookup_table {"package", "description", "files", "prep",
         "build", "install", "check", "clean", "pre", "post", "preun", "postun",
         "pretrans", "posttrans", "changelog"}
@@ -301,8 +367,7 @@ function python_subpackages()
 
         -- rescan spec for each flavor
         if not is_current_flavor then
-            local spec, err = io.open(specpath, "r")
-            if err then print ("could not find spec file at path: " .. specpath) return end
+            local spec = rescan_spec(specpath)
 
             rpm.define("python_flavor " .. python)
 
@@ -310,13 +375,12 @@ function python_subpackages()
             print(section_headline("package", current_flavor, nil))
             print_obsoletes(modname)
 
-            while true do
+            for i, line in ipairs(spec) do
                 -- collect lines until braces match. it's what rpm does, kind of.
                 local eof = false
-                local line = spec:read()
                 if line == nil then break end
                 while not match_braces(line) do
-                    local nl = spec:read()
+                    local nl = spec[i + 1]
                     if nl == nil then eof = true break end
                     line = line .. "\n" .. nl
                 end
@@ -354,6 +418,7 @@ function python_subpackages()
                 elseif line:startswith("%python_subpackages") then
                     -- ignore
                 elseif line:startswith("%if") then
+                    -- FIXME: is it still needed?
                     -- RPM handles %if on top level, whole sections can be conditional.
                     -- We must copy the %if declarations always, even if they are part
                     -- of non-copied sections. Otherwise we miss this:
@@ -378,7 +443,6 @@ function python_subpackages()
 
             dump_alternatives_posttrans()
 
-            spec:close()
         end
     end
 
